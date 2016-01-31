@@ -1,0 +1,247 @@
+---
+title: Analyzing NOAA Weather Data for Costly Weather Events
+subtitle: "Reproducible Research: Peer Assessment 2"
+author: "BS Wolfset"
+date: "January 18, 2016"
+output: 
+  html_document:
+    keep_md: true
+---
+#Synopsis: 
+An analysis was performed of weather events from 1996 through 2011. The source of the data was the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database.  It was determined that as a whole, Excessive Heat and Flash Floods lead to the greatest number of fatalities. Flooding also lead to the most property damage.  Tornadoes lead to the greatest number of injuries.
+
+#Introduction
+
+Storms and other severe weather events can cause both public health and economic problems for communities and municipalities. Many severe events can result in fatalities, injuries, and property damage.  The best way to prevent such outcomes is through prediction of the event.
+
+This analysis explored the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database. This database tracks characteristics of major storms and weather events in the United States, including when and where they occur, as well as estimates of any fatalities, injuries, and property damage.
+
+Once it is determined which types of storms have the greatest impact, it allows resources to be allocated to predicting these events and communicating that to the communities affected.
+
+#Data Processing
+At a high level, methodology for the analysis was to:
+
+ 1. downloaded from the NOAA website
+ 2. cleanse the data and choose appropriate cases
+ 3. summarize and aggregate
+ 4. analyze and graph
+
+### Data Source
+Storm Data is a comma-separated file compressed with bzip2 located at: https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2 [47Mb]
+
+There are two additional files of documentation available.
+
+ * National Weather Service Storm Data Documentation: https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf - variable definitions
+ * National Climatic Data Center Storm Events FAQ: https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf
+
+The events in the database start in the year 1950 at which point only tornadoes were tracked.  By 1996 48 different events were tracked. The version of the database used for this analysis ended in November 2011. In the earlier years of the database there are generally fewer events recorded, because they had to be entered into the database, many years after the fact, from reviewing printed publications. In more recent years, there are guidelines for tracking events and entering them directly into the database, which is why they are more complete.
+
+### Loading and processing the data
+Once the data was downloaded from the website, preliminary analysis was performed.  During the exploratory phase, it was determined that a subset of columns and rows were needed.  A data frame is created with that subset of columns.  The data frame is further refined to exclude rows for events prior to 1996.  The events themselves were inconsistent and are cleaned up.  Finally, analysis is done on the resulting rows.
+
+```{r}
+##Load required libraries and options
+library(dplyr)
+library(ggplot2)
+library(sqldf)
+library(curl)
+library(lubridate)
+options(scipen=999)
+
+## Subset the list of columns to what is needed
+## make all column classes "NULL" by default - there are 37 columns in full dataset
+colClasses <- rep("NULL", 37)
+
+## this is the list of all columns in the file
+allClasses <- list(
+     "STATE__"=1, "BGN_DATE"=2, "BGN_TIME"=3, "TIME_ZONE"=4, "COUNTY"=5, "COUNTYNAME"=6, "STATE"=7,     
+     "EVTYPE"=8, "BGN_RANGE"=9, "BGN_AZI"=10, "BGN_LOCATI"=11, "END_DATE"=12, "END_TIME"=13, "COUNTY_END"=14,
+     "COUNTYENDN"=15, "END_RANGE"=16, "END_AZI"=17, "END_LOCATI"=18, "LENGTH"=19, "WIDTH"=20, "F"=21,         
+     "MAG" =22, "FATALITIES"=23, "INJURIES"=24, "PROPDMG"=25, "PROPDMGEXP"=26, "CROPDMG"=27, "CROPDMGEXP"=28,
+     "WFO"=29,"STATEOFFIC"=30, "ZONENAMES"=31, "LATITUDE"=32, "LONGITUDE"=33, "LATITUDE_E"=34, "LONGITUDE_"=35,
+     "REMARKS"=36, "REFNUM"=37)
+
+## The only columns used in this analysis are:
+validClasses <- list("BGN_DATE"=2, "STATE"=7, "EVTYPE"=8, "FATALITIES"=23, "INJURIES"=24,
+                     "PROPDMG"=25, "PROPDMGEXP"=26, "CROPDMG"=27, "CROPDMGEXP"=28)
+
+## select only the columns needed for the analysis
+colClasses[c(2, 7, 8, 23, 24, 25, 26, 27, 28)]<- NA
+## Read directly from website
+temp <- tempfile()
+download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",temp)
+StormDataRaw <- read.csv(bzfile(temp, "repdata-data-StormData.csv"), colClasses=colClasses)
+unlink(temp)
+
+## convert the date column from factor to date
+StormDataRaw$BGN_DATE <- as.Date(as.character(StormDataRaw$BGN_DATE), "%m/%d/%Y")
+## and get a column that is just year for analysis
+StormDataRaw <- mutate(StormDataRaw, EvtYear = year(BGN_DATE)) 
+```
+
+When considering the data set, the following restrictions were understood:
+
+* From 1950 through 1954, only tornado events were recorded.
+* From 1955 through 1992, only tornado, thunderstorm wind and hail events were keyed from the paper publications into digital data.
+* From 1993 to 1995, only tornado, thunderstorm wind and hail events have been extracted from the non-formatted Text Files.
+* From 1996 to present, 48 event types are recorded as defined in NWS Directive 10-1605.
+
+Therefore, in order to consider all events and their impacts, data was analyzed from Jan 1996 through November 2011.
+
+```{r}
+##Get the numberic value of Jan 1, 1996
+strDt <- as.numeric(as.Date('1996/01/01', '%Y/%m/%d'))
+strDt
+```
+
+The list of events that NOAA tracks has changed over the years.  This has included new types of events to track as well as changing how some events are categorized.  The complete list of events was found in NWS Directive 10-1605, and at the National Weather Service Storm Data Documentation link above.
+
+The data in the database contained abbreviations, typographical errors and additional events not on the NOAA list.  To clean up the data, the events from the NOAA database were adjusted to upper case, removing all leading and trailing white space.  The adjusted events in the database were compared to the list from the NOAA website.  Any events that did not match were evaluated and assigned to a NOAA category.  For example the database had many variations on Thunderstorm and some included the abbreviation 'TSTM', these were all mapped to the category 'THUNDERSTORM WIND'. One exception is that an 'OTHER' category was introduced as some rows were not weather events (i.e. Marine Accident) or did not fit nicely into the official categories. This mapping was developed in a spreadsheet and then put up on Git to be accessible for reproducibility.  A meteorologist may have chosen to map some events differently.  However, the events that caused the most personal or property damages were so significantly higher, that any changes to the mapping should not affect the outcome.
+
+```{r}
+## Read the event mapping from the github directory
+ValidEventdf <- read.csv(
+                curl("https://raw.githubusercontent.com/BSWolfset/RepData_PeerAssessment1/master/ValidEvent.csv") )
+```
+
+The values for property and crop damage are reported in the database in two columns, the first being a damage value and the second and extension or multiplier that indicates where the value is reported at the thousands (K), millions (M), or billions (B) level.  Therefore, to compare like values in the analysis, all numbers had to be converted to the same multiplier, which was chosen to be dollars. If no value was provided, it was assumed the number was small and therefore zero was used.
+
+With the weather events spanning 15 years (1996-2011) the factor of inflation was considered.  Over that time period, the total inflation was approximately 40-43% depending on source and calculation method. Source: http://www.usinflationcalculator.com/inflation/historical-inflation-rates 
+
+Year | Average Inflation % 
+------------- | -------------
+1996|3
+1997|2.3
+1998|1.6
+1999|2.2
+2000|3.4
+2001|2.8
+2002|1.6
+2003|2.3
+2004|2.7
+2005|3.4
+2006|3.2
+2007|2.8
+2008|3.8
+2009|-0.4
+2010|1.6
+2011|3.2
+Total|39.5
+
+Moreover, in November of 2005, the method of estimating storm damage was standardized by adding a table to the 'National Weather Service Storm Data Documentation' and that table has not been adjusted since 2007.  In addition, the most costly events occurred midway through the time period and were so significantly higher in dollar value, that adjusting for inflation would have only made the difference more significant.  Therefore, it was chosen not to adjust for inflation.
+
+```{r}
+## Using sqldf limit the data set
+## Only read rows from 1996 through the end
+## Match the dataset events to the event master to clean up the event data
+## Multiply the damage amounts so they are all in consistent dollars.
+StormDataSbst <- sqldf("select EvtYear, STATE, EVTYPE, Event, FATALITIES, INJURIES,
+                               PROPDMG, PROPDMGEXP,
+                               CASE WHEN PROPDMG is null THEN 0
+                                    WHEN PROPDMGEXP in ('H', 'h') THEN PROPDMG * (100)
+                                    WHEN PROPDMGEXP in ('K', 'k') THEN PROPDMG * (1000)
+                                    WHEN PROPDMGEXP in ('M', 'm') THEN PROPDMG * (1000000)
+                                    WHEN PROPDMGEXP in ('B', 'b') THEN PROPDMG * (1000000000)
+                                    ELSE PROPDMG
+                                END as ADJPROPDMG,
+                               CROPDMG, CROPDMGEXP,
+                               CASE WHEN CROPDMG is null THEN 0
+                                    WHEN CROPDMGEXP in ('H', 'h') THEN CROPDMG * (100)
+                                    WHEN CROPDMGEXP in ('K', 'k') THEN CROPDMG * (1000)
+                                    WHEN CROPDMGEXP in ('M', 'm') THEN CROPDMG * (1000000)
+                                    WHEN CROPDMGEXP in ('B', 'b') THEN CROPDMG * (1000000000)
+                                    ELSE CROPDMG
+                                END as ADJCROPDMG
+                          from StormDataRaw
+                          join ValidEventdf on MapEvnt=upper(trim(EVTYPE))
+                         where ((FATALITIES is not null and FATALITIES > 0)
+                             or (INJURIES is not null and INJURIES > 0)
+                             or (PROPDMG is not null and PROPDMG > 0)
+                             or (CROPDMG is not null and CROPDMG > 0))
+                         and BGN_DATE >= 9496 ")
+
+## Get the data to analyze personal injuries
+StormDataAggFI <- sqldf("select Event, 'FATALITIES' as FIType,
+                                sum(FATALITIES) as SmFI, sum(FATALITIES+INJURIES) as TotFI,
+                                avg(FATALITIES) as AvgFI
+                           from StormDataSbst
+                          group by Event
+                         UNION
+                         select Event, 'INJURIES' as FIType,
+                                sum(INJURIES) as SmFI, sum(FATALITIES+INJURIES) as TotFI,
+                                avg(INJURIES) as AvgFI
+                           from StormDataSbst
+                          group by Event ")
+
+## Get the top 10 events.  Since each event has 2 rows (Fatalaties and Injuries), limit the query to 20
+StormDataAggFI2 <- sqldf("select Event, FIType, SmFI, AvgFI
+                            from StormDataAggFI order by TotFI desc, Event, FIType desc limit 20")
+
+## Get the data to analyze property damage
+StormDataAggPC <- sqldf("select Event, 'PROPERTY' as PCType,
+                                sum(ADJPROPDMG) as SmPC, sum(ADJPROPDMG+ADJCROPDMG) as TotPC,
+                                avg(ADJPROPDMG) as AvgPC
+                           from StormDataSbst
+                          group by Event
+                         UNION
+                         select Event, 'CROP' as PCType,
+                                sum(ADJCROPDMG) as SmPC, sum(ADJPROPDMG+ADJCROPDMG) as TotPC,
+                                avg(ADJCROPDMG) as AvgPC
+                           from StormDataSbst
+                          group by Event ")
+
+## Get the top 10 events.  Since each event has 2 rows (Property Damage and Crop Damage), limit the query to 20
+StormDataAggPC2 <- sqldf("select Event, PCType, SmPC, AvgPC
+                            from StormDataAggPC order by TotPC desc, Event, PCType limit 20")
+```
+
+# Results
+
+## Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?
+
+Population health includes fatalities, injuries and illness.  There are no figure in the NOAA database for illnesses as a result of weather events.
+
+In November of 2005, Differences between direct and indirect fatalities and injuries were clarified.  Indirect incidents could include a car accident due to a storm or a fatality as a result of the storm but occurred several days later.  However, illnesses are not considered (i.e. contracting pneumonia as a result of a winter weather event).  While indirect fatalities and injuries can be entered into the National Weather Service Storm Data software, they are not tallied in the official statistics.  Therefore, that analysis has been performed on direct fatalaties and injuries.
+
+To determine which events were had the greatest impact on population health, direct fatalities and injuries were added together.  The metric evaluated lives affected and therefore did not apply a weighting factor to the metrics.  In other words, it did not assume that a single fatality weighed heavier than a single injury from a population health perspective.  Fatalities and injuries were looked at separately from an event perspective.
+
+
+```{r}
+
+sqldf("select Event, FIType, SmFI, AvgFI from StormDataAggFI2
+        where FIType='FATALITIES' order by SmFI desc, AvgFI desc limit 3")
+
+sqldf("select Event, FIType, SmFI, AvgFI from StormDataAggFI2
+        where FIType='INJURIES' order by SmFI desc, AvgFI desc limit 3")
+
+ggplot(StormDataAggFI2, aes(x = Event, y = SmFI, fill = FIType)) +
+     geom_bar(stat = "identity", position="dodge") + scale_fill_discrete(name = "Category") +
+     labs(title = "Weather Events most harmful to Population Health", x = "Event", y = "Persons") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+From the chart, it is visible that the most fatalaties are from Excessive Heat and Flash Floods.  The most injuries are caused by tornadoes. 
+
+## Across the United States, which types of events have the greatest economic consequences?
+
+The NOAA database contains data for a number of economic areas including property, crop, and delayed damage as well as other related costs.  For this analysis, only property and crop damage were evaluated.
+
+```{r}
+
+sqldf("select Event, PCType, SmPC, AvgPC from StormDataAggPC2
+        where PCType='PROPERTY' order by SmPC desc, AvgPC desc limit 3")
+
+sqldf("select Event, PCType, SmPC, AvgPC from StormDataAggPC2
+        where PCType='CROP' order by SmPC desc, AvgPC desc limit 3")
+
+ggplot(StormDataAggPC2, aes(x = Event, y = SmPC/1000000, fill = PCType)) +
+     geom_bar(stat = "identity", position="dodge") + scale_fill_discrete(name = "Category") +
+     labs(title = "Weather Events with the Greatest Economic Consequences", x = "Event", y = "US Dollars (Millions)") +
+     theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```     
+
+From this graph, it is evident that floods cause the most significant amount of property damage. Drought causes the most crop damage. Hurricanes (Typhoons) cause the second most property and crop damage.
+
+## Summary 
+An analysis was performed of weather events from 1996 through 2011. The source of the data was the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database.  It was determined that as a whole, Excessive Heat and Flash Floods lead to the greatest number of fatalities. Flooding also lead to the most property damage and third most crop damage as well as the third most number of injuries.  Tornadoes lead to the greatest number of injuries. Drought causes the most crop damage.  Hurricanes (Typhoons) cause the second most property and crop damage.
+
